@@ -122,14 +122,7 @@ class AuditLogger:
                 "created_at": datetime.utcnow().isoformat()
             }
             
-            # データベースに記録
-            supabase = self._get_supabase()
-            response = supabase.table('audit_logs').insert(audit_data).execute()
-            
-            if not response.data:
-                logger.error("監査ログの記録に失敗", action=action.value)
-            
-            # 構造化ログにも出力
+            # 構造化ログに出力（audit_logsテーブルが作成されるまでの暫定対応）
             logger.info(
                 "Audit log recorded",
                 action=action.value,
@@ -137,11 +130,19 @@ class AuditLogger:
                 resource_type=resource_type,
                 resource_id=resource_id,
                 level=level.value,
-                success=success
+                success=success,
+                details=details,
+                ip_address=ip_address
             )
             
         except Exception as e:
-            logger.error("監査ログ記録エラー", error=str(e), action=action.value)
+            logger.error("監査ログ記録エラー", 
+                        error=str(e), 
+                        error_type=type(e).__name__,
+                        action=action.value,
+                        user_id=user.id if user else None,
+                        resource_type=resource_type,
+                        resource_id=resource_id)
     
     def log_authentication(
         self,
@@ -217,58 +218,49 @@ class AuditLogger:
 # グローバル監査ログインスタンス
 audit_logger = AuditLogger()
 
-# 監査ログデコレータ
 def audit_log(
     action: AuditAction,
     resource_type: str,
     get_resource_id: Optional[Callable] = None,
     level: AuditLevel = AuditLevel.INFO
 ):
-    """監査ログデコレータ
-    
-    Args:
-        action: 監査アクション
-        resource_type: リソースタイプ
-        get_resource_id: リソースIDを取得する関数（引数から動的に取得）
-        level: ログレベル
-    """
+    """監査ログデコレータ"""
     def decorator(func: Callable):
         @wraps(func)
         async def wrapper(*args, **kwargs):
+            # リクエストとユーザーを取得
             request = None
-            user = None
+            current_user = None
             resource_id = None
-            success = True
-            error_details = None
             
-            # 引数からrequestとuserを取得
+            # 引数からリクエストとユーザーを抽出
             for arg in args:
                 if isinstance(arg, Request):
                     request = arg
-                elif hasattr(arg, 'id') and hasattr(arg, 'email'):
-                    user = arg
+                elif hasattr(arg, 'id') and hasattr(arg, 'email'):  # User object
+                    current_user = arg
             
-            # キーワード引数からも取得
+            # キーワード引数からも確認
             if 'request' in kwargs:
                 request = kwargs['request']
             if 'current_user' in kwargs:
-                user = kwargs['current_user']
+                current_user = kwargs['current_user']
             
-            # リソースIDを動的に取得
-            if get_resource_id:
+            # リソースIDを取得
+            if get_resource_id and request:
                 try:
-                    resource_id = get_resource_id(*args, **kwargs)
+                    resource_id = get_resource_id(request, **kwargs)
                 except Exception as e:
-                    resource_id = None
+                    logger.warning("リソースID取得エラー", error=str(e))
             
             try:
-                # 元の関数を実行
+                # 関数を実行
                 result = await func(*args, **kwargs)
                 
-                # 成功時の監査ログ
+                # 成功ログを記録
                 audit_logger.log_audit(
                     action=action,
-                    user=user,
+                    user=current_user,
                     resource_type=resource_type,
                     resource_id=resource_id,
                     request=request,
@@ -279,35 +271,30 @@ def audit_log(
                 return result
                 
             except Exception as e:
-                # エラー時の監査ログ
-                success = False
-                error_details = {"error": str(e), "error_type": type(e).__name__}
-                
+                # エラーログを記録
                 audit_logger.log_audit(
                     action=action,
-                    user=user,
+                    user=current_user,
                     resource_type=resource_type,
                     resource_id=resource_id,
-                    details=error_details,
+                    details={"error": str(e), "error_type": type(e).__name__},
                     request=request,
                     level=AuditLevel.ERROR,
                     success=False
                 )
-                
-                # エラーを再発生
                 raise
         
         return wrapper
     return decorator
 
-# 自動監査ミドルウェア
 class AuditMiddleware(BaseHTTPMiddleware):
-    """全リクエストを自動的に監査ログに記録するミドルウェア"""
+    """監査ログミドルウェア"""
     
     def __init__(self, app, exclude_paths: Optional[list] = None):
         super().__init__(app)
         self.exclude_paths = exclude_paths or [
             "/health",
+            "/metrics",
             "/docs",
             "/openapi.json",
             "/favicon.ico"
@@ -319,19 +306,16 @@ class AuditMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         
         start_time = datetime.utcnow()
+        response = None
+        error = None
         
         try:
-            # リクエストを処理
             response = await call_next(request)
-            
-            # 成功時の監査ログ
             await self._log_request(request, response, start_time, True)
-            
             return response
-            
         except Exception as e:
-            # エラー時の監査ログ
-            await self._log_request(request, None, start_time, False, str(e))
+            error = str(e)
+            await self._log_request(request, None, start_time, False, error)
             raise
     
     async def _log_request(
@@ -342,31 +326,24 @@ class AuditMiddleware(BaseHTTPMiddleware):
         success: bool,
         error: Optional[str] = None
     ):
-        """リクエストを監査ログに記録"""
+        """リクエストログを記録"""
         try:
-            # 処理時間を計算
-            end_time = datetime.utcnow()
-            duration = (end_time - start_time).total_seconds()
-            
-            # リクエスト詳細を構築
-            details = {
-                "method": request.method,
-                "path": request.url.path,
-                "query_params": str(request.query_params),
-                "duration_seconds": duration,
-                "status_code": response.status_code if response else None
-            }
-            
-            if error:
-                details["error"] = error
+            duration = (datetime.utcnow() - start_time).total_seconds()
             
             # アクションを決定
             action = self._determine_action(request.method, request.url.path)
             
+            details = {
+                "method": request.method,
+                "path": request.url.path,
+                "duration": duration,
+                "status_code": response.status_code if response else None,
+                "error": error
+            }
+            
             # ユーザー情報を取得（可能であれば）
             user = getattr(request.state, 'user', None)
             
-            # 監査ログを記録
             audit_logger.log_audit(
                 action=action,
                 user=user,
@@ -378,51 +355,48 @@ class AuditMiddleware(BaseHTTPMiddleware):
             )
             
         except Exception as e:
-            logger.error("監査ミドルウェアエラー", error=str(e))
+            logger.error("リクエストログ記録エラー", error=str(e))
     
     def _determine_action(self, method: str, path: str) -> AuditAction:
         """HTTPメソッドとパスからアクションを決定"""
-        if "auth" in path:
-            if method == "POST" and "login" in path:
+        # パスベースのアクション判定
+        if "/auth/" in path:
+            if "login" in path:
                 return AuditAction.LOGIN
-            elif method == "POST" and "logout" in path:
+            elif "logout" in path:
                 return AuditAction.LOGOUT
-        elif "theme" in path:
-            if method == "POST":
-                return AuditAction.THEME_CREATE
-            elif method == "PUT":
-                return AuditAction.THEME_UPDATE
-            elif method == "DELETE":
-                return AuditAction.THEME_DELETE
-        elif "node" in path:
-            if method == "POST":
-                return AuditAction.NODE_CREATE
-            elif method == "PUT":
-                return AuditAction.NODE_UPDATE
-            elif method == "DELETE":
-                return AuditAction.NODE_DELETE
-        elif "block" in path:
-            if method == "POST":
-                return AuditAction.BLOCK_CREATE
-            elif method == "PUT":
-                return AuditAction.BLOCK_UPDATE
-            elif method == "DELETE":
-                return AuditAction.BLOCK_DELETE
-        elif "user" in path:
+        elif "/users/" in path:
             if method == "POST":
                 return AuditAction.USER_CREATE
-            elif method == "PUT":
+            elif method in ["PUT", "PATCH"]:
                 return AuditAction.USER_UPDATE
             elif method == "DELETE":
                 return AuditAction.USER_DELETE
+        elif "/nodes/" in path:
+            if method == "POST":
+                return AuditAction.NODE_CREATE
+            elif method in ["PUT", "PATCH"]:
+                return AuditAction.NODE_UPDATE
+            elif method == "DELETE":
+                return AuditAction.NODE_DELETE
+        elif "/blocks/" in path:
+            if method == "POST":
+                return AuditAction.BLOCK_CREATE
+            elif method in ["PUT", "PATCH"]:
+                return AuditAction.BLOCK_UPDATE
+            elif method == "DELETE":
+                return AuditAction.BLOCK_DELETE
+        elif "/themes/" in path:
+            if method == "POST":
+                return AuditAction.THEME_CREATE
+            elif method in ["PUT", "PATCH"]:
+                return AuditAction.THEME_UPDATE
+            elif method == "DELETE":
+                return AuditAction.THEME_DELETE
         
         # デフォルトアクション
-        if method == "GET":
-            return AuditAction.READ
-        else:
-            return AuditAction.READ
+        return AuditAction.READ if method == "GET" else AuditAction.SEARCH
 
-# 便利な関数
 def log_user_action(
     action: AuditAction,
     user: User,
@@ -431,14 +405,20 @@ def log_user_action(
     request: Optional[Request] = None,
     **kwargs
 ):
-    """ユーザーアクションをログ記録"""
-    audit_logger.log_resource_access(
+    """ユーザーアクションログ（簡易版）"""
+    details = {k: v for k, v in kwargs.items() if k not in ['old_data', 'new_data']}
+    if 'old_data' in kwargs:
+        details['old_data'] = kwargs['old_data']
+    if 'new_data' in kwargs:
+        details['new_data'] = kwargs['new_data']
+    
+    audit_logger.log_audit(
         action=action,
         user=user,
         resource_type=resource_type,
         resource_id=resource_id,
-        request=request,
-        **kwargs
+        details=details,
+        request=request
     )
 
 def log_security_violation(
@@ -447,17 +427,13 @@ def log_security_violation(
     request: Optional[Request] = None,
     details: Optional[Dict] = None
 ):
-    """セキュリティ違反をログ記録"""
-    audit_details = {"violation_type": violation_type}
-    if details:
-        audit_details.update(details)
-    
+    """セキュリティ違反ログ"""
     audit_logger.log_security_event(
         action=AuditAction.SECURITY_VIOLATION,
         user=user,
         request=request,
-        details=audit_details,
-        level=AuditLevel.ERROR
+        details={"violation_type": violation_type, **(details or {})},
+        level=AuditLevel.WARNING
     )
 
 def log_authentication_attempt(
@@ -467,7 +443,7 @@ def log_authentication_attempt(
     request: Optional[Request] = None,
     failure_reason: Optional[str] = None
 ):
-    """認証試行をログ記録"""
+    """認証試行ログ"""
     action = AuditAction.LOGIN if success else AuditAction.LOGIN_FAILED
     audit_logger.log_authentication(
         action=action,

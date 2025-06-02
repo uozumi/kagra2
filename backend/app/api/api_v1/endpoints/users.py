@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.auth import get_current_user
 from app.core.database import get_supabase_client
-from app.core.rbac import require_permission, Permission, RBACService
+# 新システム
+from app.core.rbac import require_database_permission, DatabaseRBACService
 from app.models.user import User, UserUpdateRequest, UserUpdate, UserResponse
 from app.services.charaxy_service import CharaxyService
 from typing import Optional, List, Dict, Any
@@ -29,12 +30,12 @@ def get_user_id_from_path(request: Request, **kwargs) -> str:
 
 @router.get("/")
 @limiter.limit("30/minute")
-@require_permission(Permission.USER_READ)
+@require_database_permission("read")
 async def get_users(
     request: Request,
     current_user: User = Depends(get_current_user)
 ):
-    """ユーザー一覧取得"""
+    """ユーザー一覧取得（新データベースRBACシステム使用）"""
     return {"message": "Users endpoint"}
 
 
@@ -49,11 +50,74 @@ async def get_current_user_info(
     try:
         logger.info("ユーザー情報取得", user_id=current_user.id)
         
+        supabase = get_supabase_client()
+        
+        # user_profiles_viewから基本情報を取得
+        avatar_url = None
+        name = None
+        try:
+            profiles_view_response = supabase.table('user_profiles_view').select('name, avatar_url').eq('id', current_user.id).execute()
+            if profiles_view_response.data and profiles_view_response.data[0]:
+                view_data = profiles_view_response.data[0]
+                name = view_data.get('name')
+                avatar_url = view_data.get('avatar_url')
+                logger.info("user_profiles_viewから基本情報取得成功", user_id=current_user.id)
+        except Exception as e:
+            logger.warning("user_profiles_viewからの基本情報取得エラー", user_id=current_user.id, error=str(e))
+        
+        # user_profilesテーブルから詳細情報を取得
+        slack_member_id = None
+        extension_number = None
+        try:
+            profiles_response = supabase.table('user_profiles').select('slack_member_id, extension_number, display_name, avatar_url').eq('user_id', current_user.id).execute()
+            if profiles_response.data and profiles_response.data[0]:
+                profile_data = profiles_response.data[0]
+                slack_member_id = profile_data.get('slack_member_id')
+                extension_number = profile_data.get('extension_number')
+                # user_profiles_viewで取得できなかった場合のフォールバック
+                if not avatar_url:
+                    avatar_url = profile_data.get('avatar_url')
+                logger.info("user_profilesから詳細情報取得成功", user_id=current_user.id)
+        except Exception as e:
+            logger.warning("user_profilesからの詳細情報取得エラー", user_id=current_user.id, error=str(e))
+        
+        # 所属情報を取得
+        affiliations = []
+        try:
+            # user_affiliationsから所属情報を取得
+            affiliations_response = supabase.table('user_affiliations').select('*').eq('user_id', current_user.id).execute()
+            if affiliations_response.data:
+                # テナントごとにグループ化
+                tenant_groups = {}
+                for aff in affiliations_response.data:
+                    tenant_id = aff['tenant_id']
+                    if tenant_id not in tenant_groups:
+                        tenant_groups[tenant_id] = {
+                            'tenantId': tenant_id,
+                            'tenantName': aff['tenant_name'],
+                            'departments': []
+                        }
+                    if aff.get('department_name'):
+                        tenant_groups[tenant_id]['departments'].append(aff['department_name'])
+                
+                affiliations = list(tenant_groups.values())
+                logger.info("所属情報取得成功", user_id=current_user.id, affiliations_count=len(affiliations))
+            else:
+                logger.info("所属情報が見つかりません", user_id=current_user.id)
+                    
+        except Exception as e:
+            logger.warning("所属情報取得エラー", user_id=current_user.id, error=str(e))
+        
         return UserResponse(
             id=current_user.id,
             email=current_user.email,
             display_name=current_user.display_name,
-            role=current_user.role
+            role=current_user.role,
+            avatar_url=avatar_url,
+            name=name,
+            slack_member_id=slack_member_id,
+            extension_number=extension_number,
+            affiliations=affiliations
         )
         
     except Exception as e:
@@ -122,16 +186,16 @@ async def update_current_user(
 
 @router.get("/{user_id}", response_model=UserResponse)
 @limiter.limit("30/minute")
-@require_permission(Permission.USER_READ)
+@require_database_permission("read")
 @audit_log(action=AuditAction.READ, resource_type="user", get_resource_id=get_user_id_from_path)
 async def get_user(
     request: Request,
     user_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    """特定ユーザー情報取得（管理者権限必要）"""
+    """特定ユーザー情報取得（管理者権限必要）（新データベースRBACシステム使用）"""
     try:
-        logger.info("ユーザー情報取得開始", target_user_id=user_id, user_id=current_user.id)
+        logger.info("新RBACシステムでユーザー情報取得開始", target_user_id=user_id, user_id=current_user.id)
         
         supabase = get_supabase_client()
         
@@ -143,7 +207,7 @@ async def get_user(
         
         user_data = response.data[0]
         
-        logger.info("ユーザー情報取得完了", target_user_id=user_id)
+        logger.info("新RBACシステムでユーザー情報取得完了", target_user_id=user_id)
         
         return UserResponse(
             id=user_data['user_id'],
@@ -155,7 +219,7 @@ async def get_user(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ユーザー情報取得エラー", target_user_id=user_id, error=str(e))
+        logger.error("新RBACシステムでユーザー情報取得エラー", target_user_id=user_id, error=str(e))
         raise HTTPException(status_code=500, detail="ユーザー情報の取得に失敗しました")
 
 

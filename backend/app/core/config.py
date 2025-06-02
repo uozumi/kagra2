@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional
-import os
 
 
 class Settings(BaseSettings):
@@ -60,7 +59,7 @@ class Settings(BaseSettings):
     
     # ログ設定
     LOG_LEVEL: str = "INFO"
-    LOG_FORMAT: str = "json"
+    LOG_FORMAT: str = "console"
     
     # GCP設定
     GCP_PROJECT_ID: Optional[str] = None
@@ -110,9 +109,11 @@ class Settings(BaseSettings):
         if self.ENVIRONMENT == "production":
             self.DEBUG = False
             self.LOG_LEVEL = "WARNING"
+            self.LOG_FORMAT = "json"  # 本番環境ではJSON形式
         elif self.ENVIRONMENT == "development":
             self.DEBUG = True
             self.LOG_LEVEL = "DEBUG"
+            self.LOG_FORMAT = "console"  # 開発環境では読みやすいConsole形式
             
         # CORS設定の環境別調整
         if self.ENVIRONMENT == "development":

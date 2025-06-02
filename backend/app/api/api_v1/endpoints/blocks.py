@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from typing import List, Optional
 import structlog
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -7,7 +7,8 @@ from slowapi.util import get_remote_address
 from app.core.database import get_supabase_client
 from app.core.auth import get_current_user
 from app.core.security import query_sanitizer
-from app.core.rbac import require_permission, Permission, RBACService
+# 新システム
+from app.core.rbac import require_database_permission, DatabaseRBACService
 from app.core.audit import audit_log, AuditAction, log_user_action
 from app.models.user import User
 from app.models.charaxy import Block, BlockCreate, BlockUpdate, SetThemeRequest, BlockReorderRequest
@@ -28,7 +29,7 @@ def get_block_id_from_path(request: Request, **kwargs) -> str:
 
 @router.get("/nodes/{node_id}/blocks", response_model=List[Block])
 @limiter.limit("30/minute")
-@require_permission(Permission.BLOCK_READ)
+@require_database_permission("read")
 @audit_log(action=AuditAction.READ, resource_type="block")
 async def get_blocks(
     request: Request,
@@ -36,23 +37,23 @@ async def get_blocks(
     current_user: User = Depends(get_current_user),
     service: CharaxyService = Depends(get_charaxy_service)
 ):
-    """ノードのブロック一覧取得"""
+    """ノードのブロック一覧取得（新データベースRBACシステム使用）"""
     try:
         # UUIDバリデーション
         if not query_sanitizer.validate_uuid(node_id):
             raise HTTPException(status_code=400, detail="無効なノードIDです")
         
-        logger.info("ブロック一覧取得開始", node_id=node_id, user_id=current_user.id)
+        logger.info("新RBACシステムでブロック一覧取得開始", node_id=node_id, user_id=current_user.id)
         blocks = service.get_node_blocks(node_id)
-        logger.info("ブロック一覧取得完了", node_id=node_id, count=len(blocks))
+        logger.info("新RBACシステムでブロック一覧取得完了", node_id=node_id, count=len(blocks))
         return blocks
     except Exception as e:
-        logger.error("ブロック一覧取得エラー", node_id=node_id, error=str(e))
+        logger.error("新RBACシステムでブロック一覧取得エラー", node_id=node_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"ブロック取得エラー: {str(e)}")
 
 @router.get("/blocks/{block_id}")
 @limiter.limit("60/minute")
-@require_permission(Permission.BLOCK_READ)
+@require_database_permission("read")
 @audit_log(action=AuditAction.READ, resource_type="block", get_resource_id=get_block_id_from_path)
 async def get_block(
     request: Request,
@@ -60,34 +61,46 @@ async def get_block(
     current_user: User = Depends(get_current_user),
     service: CharaxyService = Depends(get_charaxy_service)
 ):
-    """特定のブロック取得"""
+    """特定のブロック取得（新データベースRBACシステム使用）"""
     try:
         # UUIDバリデーション
         if not query_sanitizer.validate_uuid(block_id):
             raise HTTPException(status_code=400, detail="無効なブロックIDです")
         
-        logger.info("ブロック詳細取得開始", block_id=block_id, user_id=current_user.id)
+        logger.info("新RBACシステムでブロック詳細取得開始", block_id=block_id, user_id=current_user.id)
         block = service.get_block(block_id)
         
         if not block:
             logger.warning("ブロックが見つかりません", block_id=block_id)
             raise HTTPException(status_code=404, detail="ブロックが見つかりません")
         
-        # 所有者チェック（user_idフィールドを使用）
-        if block.get('user_id') != current_user.id:
+        # ノード情報を取得して公開設定をチェック
+        supabase = get_supabase_client()
+        node_response = supabase.table('nodes').select('id, is_public, user_id, deleted_at').eq('id', block['node_id']).single().execute()
+        
+        if not node_response.data or node_response.data.get('deleted_at'):
+            raise HTTPException(status_code=404, detail="関連するノードが見つかりません")
+        
+        node = node_response.data
+        
+        # アクセス権限チェック: 自分のブロックまたは公開ノードのブロック
+        is_owner = block.get('user_id') == current_user.id
+        is_public_node = node.get('is_public', False)
+        
+        if not (is_owner or is_public_node):
             raise HTTPException(status_code=403, detail="このブロックにアクセスする権限がありません")
         
-        logger.info("ブロック詳細取得完了", block_id=block_id)
+        logger.info("新RBACシステムでブロック詳細取得完了", block_id=block_id, is_owner=is_owner, is_public=is_public_node)
         return block
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ブロック詳細取得エラー", block_id=block_id, error=str(e))
+        logger.error("新RBACシステムでブロック詳細取得エラー", block_id=block_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"ブロック取得エラー: {str(e)}")
 
 @router.post("/blocks", response_model=Block)
 @limiter.limit("5/minute")
-@require_permission(Permission.BLOCK_CREATE)
+@require_database_permission("create")
 @audit_log(action=AuditAction.BLOCK_CREATE, resource_type="block")
 async def create_block(
     request: Request,
@@ -95,7 +108,7 @@ async def create_block(
     current_user: User = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
 ):
-    """ブロック作成"""
+    """ブロック作成（新データベースRBACシステム使用）"""
     try:
         # 入力値のサニタイズ
         block.title = query_sanitizer.sanitize_string(block.title)
@@ -106,7 +119,7 @@ async def create_block(
         if not query_sanitizer.validate_uuid(block.node_id):
             raise HTTPException(status_code=400, detail="無効なノードIDです")
         
-        logger.info("ブロック作成開始", node_id=block.node_id, user_id=current_user.id, title=block.title)
+        logger.info("新RBACシステムでブロック作成開始", node_id=block.node_id, user_id=current_user.id, title=block.title)
         
         # ソート順を取得
         sort_response = supabase.table('blocks').select('sort_order').eq('node_id', block.node_id).is_('deleted_at', 'null').order('sort_order', desc=True).limit(1).execute()
@@ -126,7 +139,7 @@ async def create_block(
             raise Exception("データベースエラー: ブロックの作成に失敗しました")
         
         created_block = response.data[0]
-        logger.info("ブロック作成完了", block_id=created_block['id'])
+        logger.info("新RBACシステムでブロック作成完了", block_id=created_block['id'])
         
         # 詳細な監査ログを記録
         log_user_action(
@@ -143,12 +156,12 @@ async def create_block(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ブロック作成エラー", node_id=block.node_id, error=str(e))
+        logger.error("新RBACシステムでブロック作成エラー", node_id=block.node_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"ブロック作成エラー: {str(e)}")
 
 @router.put("/blocks/{block_id}", response_model=Block)
 @limiter.limit("10/minute")
-@require_permission(Permission.BLOCK_UPDATE)
+@require_database_permission("update")
 @audit_log(action=AuditAction.BLOCK_UPDATE, resource_type="block", get_resource_id=get_block_id_from_path)
 async def update_block(
     request: Request,
@@ -158,12 +171,12 @@ async def update_block(
     service: CharaxyService = Depends(get_charaxy_service),
     supabase = Depends(get_supabase_client)
 ):
-    """ブロック更新"""
+    """ブロック更新（新データベースRBACシステム使用）"""
     try:
-        logger.info("ブロック更新開始", block_id=block_id, user_id=current_user.id)
+        logger.info("新RBACシステムでブロック更新開始", block_id=block_id, user_id=current_user.id)
         
         # 既存ブロック取得
-        existing_block = service.get_block_by_id(block_id)
+        existing_block = service.get_block(block_id)
         if not existing_block:
             raise HTTPException(status_code=404, detail="ブロックが見つかりません")
         
@@ -185,17 +198,17 @@ async def update_block(
             new_data=block.dict(exclude_unset=True)
         )
         
-        logger.info("ブロック更新完了", block_id=block_id)
+        logger.info("新RBACシステムでブロック更新完了", block_id=block_id)
         return updated_block
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ブロック更新エラー", block_id=block_id, error=str(e))
+        logger.error("新RBACシステムでブロック更新エラー", block_id=block_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"ブロック更新エラー: {str(e)}")
 
 @router.delete("/blocks/{block_id}")
 @limiter.limit("5/minute")
-@require_permission(Permission.BLOCK_DELETE)
+@require_database_permission("delete")
 @audit_log(action=AuditAction.BLOCK_DELETE, resource_type="block", get_resource_id=get_block_id_from_path)
 async def delete_block(
     request: Request,
@@ -204,12 +217,12 @@ async def delete_block(
     service: CharaxyService = Depends(get_charaxy_service),
     supabase = Depends(get_supabase_client)
 ):
-    """ブロック削除"""
+    """ブロック削除（新データベースRBACシステム使用）"""
     try:
-        logger.info("ブロック削除開始", block_id=block_id, user_id=current_user.id)
+        logger.info("新RBACシステムでブロック削除開始", block_id=block_id, user_id=current_user.id)
         
         # 既存ブロック取得
-        existing_block = service.get_block_by_id(block_id)
+        existing_block = service.get_block(block_id)
         if not existing_block:
             raise HTTPException(status_code=404, detail="ブロックが見つかりません")
         
@@ -230,17 +243,17 @@ async def delete_block(
             old_data={"title": existing_block.get('title'), "content": existing_block.get('content')}
         )
         
-        logger.info("ブロック削除完了", block_id=block_id)
+        logger.info("新RBACシステムでブロック削除完了", block_id=block_id)
         return {"message": "ブロックが削除されました"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ブロック削除エラー", block_id=block_id, error=str(e))
+        logger.error("新RBACシステムでブロック削除エラー", block_id=block_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"ブロック削除エラー: {str(e)}")
 
 @router.put("/blocks/reorder")
 @limiter.limit("10/minute")
-@require_permission(Permission.BLOCK_UPDATE)
+@require_database_permission("update")
 @audit_log(action=AuditAction.BLOCK_REORDER, resource_type="block", get_resource_id=get_block_id_from_path)
 async def reorder_blocks(
     request: Request,
@@ -248,9 +261,9 @@ async def reorder_blocks(
     current_user: User = Depends(get_current_user),
     service: CharaxyService = Depends(get_charaxy_service)
 ):
-    """ブロック順序変更"""
+    """ブロック順序変更（新データベースRBACシステム使用）"""
     try:
-        logger.info("ブロック順序変更開始", user_id=current_user.id, block_count=len(reorder_request.block_ids))
+        logger.info("新RBACシステムでブロック順序変更開始", user_id=current_user.id, block_count=len(reorder_request.block_ids))
         
         # 並び替え実行
         service.reorder_blocks(reorder_request.block_ids, current_user.id)
@@ -265,15 +278,15 @@ async def reorder_blocks(
             new_data={"block_ids": reorder_request.block_ids}
         )
         
-        logger.info("ブロック順序変更完了", user_id=current_user.id)
+        logger.info("新RBACシステムでブロック順序変更完了", user_id=current_user.id)
         return {"message": "ブロック順序が更新されました"}
     except Exception as e:
-        logger.error("ブロック順序変更エラー", user_id=current_user.id, error=str(e))
+        logger.error("新RBACシステムでブロック順序変更エラー", user_id=current_user.id, error=str(e))
         raise HTTPException(status_code=500, detail=f"ブロック順序更新エラー: {str(e)}")
 
 @router.put("/blocks/{block_id}/theme")
 @limiter.limit("15/minute")
-@require_permission(Permission.BLOCK_UPDATE)
+@require_database_permission("update")
 @audit_log(action=AuditAction.BLOCK_UPDATE, resource_type="block", get_resource_id=get_block_id_from_path)
 async def set_block_theme(
     request: Request,
@@ -283,12 +296,12 @@ async def set_block_theme(
     service: CharaxyService = Depends(get_charaxy_service),
     supabase = Depends(get_supabase_client)
 ):
-    """ブロックのテーマ設定"""
+    """ブロックのテーマ設定（新データベースRBACシステム使用）"""
     try:
-        logger.info("ブロックテーマ設定開始", block_id=block_id, user_id=current_user.id)
+        logger.info("新RBACシステムでブロックテーマ設定開始", block_id=block_id, user_id=current_user.id)
         
         # 既存ブロック取得
-        existing_block = service.get_block_by_id(block_id)
+        existing_block = service.get_block(block_id)
         if not existing_block:
             raise HTTPException(status_code=404, detail="ブロックが見つかりません")
         
@@ -315,10 +328,10 @@ async def set_block_theme(
             new_data={"theme_id": theme_id}
         )
         
-        logger.info("ブロックテーマ設定完了", block_id=block_id, theme_id=theme_id)
+        logger.info("新RBACシステムでブロックテーマ設定完了", block_id=block_id, theme_id=theme_id)
         return {"message": "テーマが設定されました"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ブロックテーマ設定エラー", block_id=block_id, error=str(e))
+        logger.error("新RBACシステムでブロックテーマ設定エラー", block_id=block_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"テーマ設定エラー: {str(e)}") 

@@ -4,7 +4,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 import hashlib
 import hmac
 import structlog
@@ -12,6 +12,7 @@ from app.core.config import settings
 from functools import wraps
 from datetime import datetime, timedelta
 import os
+import re
 
 logger = structlog.get_logger()
 
@@ -69,8 +70,10 @@ csrf_protection = CSRFProtection(settings.JWT_SECRET_KEY)
 
 # SQLインジェクション対策のためのクエリサニタイザー
 class QuerySanitizer:
+    """SQLインジェクション対策のためのクエリサニタイザー"""
+    
     # 危険なSQLキーワードとパターン
-    DANGEROUS_PATTERNS = [
+    DANGEROUS_PATTERNS: List[str] = [
         # SQLインジェクション攻撃パターン
         r"(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE)\b)",
         r"(\b(UNION|OR|AND)\s+\d+\s*=\s*\d+)",
@@ -123,8 +126,6 @@ class QuerySanitizer:
     @staticmethod
     def validate_sql_query_structure(query: str) -> bool:
         """SQLクエリの構造を検証（より厳密）"""
-        import re
-        
         # 基本的な構造チェック
         query_upper = query.upper().strip()
         
@@ -180,10 +181,8 @@ class QuerySanitizer:
             return QuerySanitizer.sanitize_string(value)
     
     @staticmethod
-    def create_parameterized_query(base_query: str, params: dict) -> tuple:
+    def create_parameterized_query(base_query: str, params: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
         """パラメータ化クエリの作成"""
-        import re
-        
         # プレースホルダーの検証
         placeholders = re.findall(r'\{(\w+)\}', base_query)
         
@@ -200,23 +199,11 @@ class QuerySanitizer:
             else:
                 sanitized_params[key] = value
         
-        # クエリの構築
-        try:
-            final_query = base_query.format(**sanitized_params)
-        except KeyError as e:
-            raise ValueError(f"Invalid parameter reference: {e}")
-        
-        # 最終的なクエリの検証
-        if not QuerySanitizer.validate_sql_query_structure(final_query):
-            raise ValueError("Invalid query structure detected")
-        
-        return final_query, sanitized_params
+        return base_query, sanitized_params
     
     @staticmethod
     def detect_sql_injection_attempt(input_string: str) -> dict:
         """SQLインジェクション試行の詳細検出"""
-        import re
-        
         detected_patterns = []
         risk_level = "low"
         
@@ -288,7 +275,6 @@ class QuerySanitizer:
             value = value[:max_length]
         
         # 危険なパターンをチェック
-        import re
         for pattern in QuerySanitizer.DANGEROUS_PATTERNS:
             if re.search(pattern, value, re.IGNORECASE):
                 logger.warning("Dangerous pattern detected in input", pattern=pattern, input=value[:100])
@@ -319,7 +305,6 @@ class QuerySanitizer:
     @staticmethod
     def validate_uuid(value: str) -> bool:
         """UUIDの形式を検証"""
-        import re
         uuid_pattern = re.compile(
             r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
             re.IGNORECASE
@@ -329,7 +314,6 @@ class QuerySanitizer:
     @staticmethod
     def validate_email(email: str) -> bool:
         """メールアドレスの形式を検証"""
-        import re
         email_pattern = re.compile(
             r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         )
@@ -338,7 +322,6 @@ class QuerySanitizer:
     @staticmethod
     def validate_sql_identifier(identifier: str) -> bool:
         """SQLの識別子（テーブル名、カラム名など）を検証"""
-        import re
         # 英数字とアンダースコアのみ許可、数字で始まらない
         pattern = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
         return bool(pattern.match(identifier)) and len(identifier) <= 63
@@ -529,7 +512,6 @@ class SecurityMiddleware:
             r"vbscript:",
         ]
         
-        import re
         for pattern in suspicious_patterns:
             if re.search(pattern, user_agent, re.IGNORECASE):
                 return True
@@ -795,7 +777,6 @@ class SecurityHeaderValidator:
         if "max-age=" not in hsts_header:
             issues.append("HSTS max-age directive is missing")
         else:
-            import re
             max_age_match = re.search(r'max-age=(\d+)', hsts_header)
             if max_age_match:
                 max_age = int(max_age_match.group(1))

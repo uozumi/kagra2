@@ -1,99 +1,135 @@
-from pydantic import BaseModel
-from typing import Optional
+"""
+Charaxy関連のPydanticモデル定義
+
+ノード、ブロック、アクティビティなどのCharaxyシステムで使用されるデータモデルを定義します。
+"""
+
+from pydantic import BaseModel, Field
+from typing import Optional, List
 from datetime import datetime
 
-# Node関連モデル
+
+# ===== Node関連モデル =====
+
 class NodeBase(BaseModel):
-    title: str
-    description: Optional[str] = None
-    type: str = "default"
-    is_public: bool = False
+    """ノードの基本モデル"""
+    title: str = Field(..., description="ノードのタイトル")
+    description: Optional[str] = Field(None, description="ノードの説明")
+    type: str = Field(default="default", description="ノードのタイプ")
+    is_public: bool = Field(default=False, description="公開フラグ")
+
 
 class NodeCreate(NodeBase):
+    """ノード作成用モデル"""
     pass
+
 
 class NodeUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    type: Optional[str] = None
-    is_public: Optional[bool] = None
+    """ノード更新用モデル"""
+    title: Optional[str] = Field(None, description="ノードのタイトル")
+    description: Optional[str] = Field(None, description="ノードの説明")
+    type: Optional[str] = Field(None, description="ノードのタイプ")
+    is_public: Optional[bool] = Field(None, description="公開フラグ")
+
 
 class Node(NodeBase):
-    id: str
-    created_at: datetime
-    updated_at: datetime
-    user_id: str
-    parent_id: Optional[str] = None
-    sort_order: int
-    visibility_level: Optional[int] = None
-    deleted_at: Optional[datetime] = None
-    user_name: Optional[str] = None
-    user_avatar: Optional[str] = None
+    """ノードの完全なモデル（データベースから取得）"""
+    id: str = Field(..., description="ノードID")
+    created_at: datetime = Field(..., description="作成日時")
+    updated_at: datetime = Field(..., description="更新日時")
+    user_id: str = Field(..., description="作成者のユーザーID")
+    parent_id: Optional[str] = Field(None, description="親ノードID")
+    sort_order: int = Field(..., description="ソート順")
+    visibility_level: Optional[int] = Field(None, description="可視性レベル")
+    deleted_at: Optional[datetime] = Field(None, description="削除日時")
+    
+    # 関連データ（JOIN結果）
+    user_name: Optional[str] = Field(None, description="作成者名")
+    user_avatar: Optional[str] = Field(None, description="作成者のアバター")
 
-# Block関連モデル
+    class Config:
+        from_attributes = True
+
+
+# ===== Block関連モデル =====
+
 class BlockBase(BaseModel):
-    title: str
-    content: Optional[str] = None
+    """ブロックの基本モデル"""
+    title: str = Field(..., description="ブロックのタイトル")
+    content: Optional[str] = Field(None, description="ブロックの内容")
+
 
 class BlockCreate(BlockBase):
-    node_id: str
-    block_theme_id: Optional[str] = None
+    """ブロック作成用モデル"""
+    node_id: str = Field(..., description="所属するノードID")
+    block_theme_id: Optional[str] = Field(None, description="ブロックテーマID")
+
 
 class BlockUpdate(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    sort_order: Optional[int] = None
-    block_theme_id: Optional[str] = None
+    """ブロック更新用モデル"""
+    title: Optional[str] = Field(None, description="ブロックのタイトル")
+    content: Optional[str] = Field(None, description="ブロックの内容")
+    sort_order: Optional[int] = Field(None, description="ソート順")
+    block_theme_id: Optional[str] = Field(None, description="ブロックテーマID")
+
 
 class Block(BlockBase):
-    id: str
-    created_at: datetime
-    updated_at: datetime
-    user_id: str
-    node_id: str
-    block_theme_id: Optional[str] = None
-    sort_order: Optional[int] = None
-    deleted_at: Optional[datetime] = None
-    node_title: Optional[str] = None
-    user_name: Optional[str] = None
+    """ブロックの完全なモデル（データベースから取得）"""
+    id: str = Field(..., description="ブロックID")
+    created_at: datetime = Field(..., description="作成日時")
+    updated_at: datetime = Field(..., description="更新日時")
+    user_id: str = Field(..., description="作成者のユーザーID")
+    node_id: str = Field(..., description="所属するノードID")
+    block_theme_id: Optional[str] = Field(None, description="ブロックテーマID")
+    sort_order: Optional[int] = Field(None, description="ソート順")
+    deleted_at: Optional[datetime] = Field(None, description="削除日時")
+    
+    # 関連データ（JOIN結果）
+    node_title: Optional[str] = Field(None, description="所属ノードのタイトル")
+    user_name: Optional[str] = Field(None, description="作成者名")
 
-# BlockTheme関連モデル
-class BlockThemeBase(BaseModel):
-    title: str
+    class Config:
+        from_attributes = True
 
-class BlockThemeCreate(BlockThemeBase):
-    pass
 
-class BlockTheme(BlockThemeBase):
-    id: str
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    creator_id: Optional[str] = None
-    block_count: Optional[int] = 0
-
-# その他のリクエスト/レスポンスモデル
-class SetThemeRequest(BaseModel):
-    theme_id: Optional[str] = None
-
-class BlockReorderRequest(BaseModel):
-    block_ids: list[str]
-
-class ActivityItem(BaseModel):
-    block_id: str
-    block_title: str
-    block_updated_at: datetime
-    node_title: str
-    user_name: str
-    user_id: str
-    node_id: str
+# ===== リクエスト/レスポンス用モデル =====
 
 class BlockCreateRequest(BaseModel):
-    title: str
-    content: Optional[str] = None
-    node_id: str
-    order_index: int
-    block_theme_id: Optional[str] = None
+    """ブロック作成リクエスト用モデル"""
+    title: str = Field(..., description="ブロックのタイトル")
+    content: Optional[str] = Field(None, description="ブロックの内容")
+    node_id: str = Field(..., description="所属するノードID")
+    order_index: int = Field(..., description="挿入位置のインデックス")
+    block_theme_id: Optional[str] = Field(None, description="ブロックテーマID")
+
 
 class BlockUpdateRequest(BaseModel):
-    title: str
-    content: Optional[str] = None 
+    """ブロック更新リクエスト用モデル"""
+    title: str = Field(..., description="ブロックのタイトル")
+    content: Optional[str] = Field(None, description="ブロックの内容")
+
+
+class BlockReorderRequest(BaseModel):
+    """ブロック並び替えリクエスト用モデル"""
+    block_ids: List[str] = Field(..., description="並び替え後のブロックIDリスト")
+
+
+class SetThemeRequest(BaseModel):
+    """テーマ設定リクエスト用モデル"""
+    theme_id: Optional[str] = Field(None, description="設定するテーマID（Noneで解除）")
+
+
+# ===== アクティビティ関連モデル =====
+
+class ActivityItem(BaseModel):
+    """アクティビティアイテムモデル"""
+    block_id: str = Field(..., description="ブロックID")
+    block_title: str = Field(..., description="ブロックのタイトル")
+    block_updated_at: datetime = Field(..., description="ブロックの更新日時")
+    node_title: str = Field(..., description="所属ノードのタイトル")
+    user_name: str = Field(..., description="更新者名")
+    user_id: str = Field(..., description="更新者のユーザーID")
+    node_id: str = Field(..., description="所属ノードID")
+
+    class Config:
+        from_attributes = True 

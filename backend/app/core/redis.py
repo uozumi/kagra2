@@ -1,5 +1,5 @@
 import redis.asyncio as redis
-from typing import Optional, Any
+from typing import Optional, Any, List
 import json
 import structlog
 
@@ -7,38 +7,38 @@ from app.core.config import settings
 
 logger = structlog.get_logger()
 
-# Redisクライアント
-redis_client: Optional[redis.Redis] = None
+# Redisクライアント（シングルトン）
+_redis_client: Optional[redis.Redis] = None
 
 
 async def get_redis_client() -> redis.Redis:
-    """Redisクライアントを取得"""
-    global redis_client
+    """Redisクライアントを取得（シングルトンパターン）"""
+    global _redis_client
     
-    if redis_client is None:
+    if _redis_client is None:
         try:
-            redis_client = redis.from_url(
+            _redis_client = redis.from_url(
                 settings.REDIS_URL,
                 password=settings.REDIS_PASSWORD,
                 db=settings.REDIS_DB,
                 decode_responses=True
             )
             # 接続テスト
-            await redis_client.ping()
+            await _redis_client.ping()
             logger.info("Redis client initialized")
         except Exception as e:
             logger.error("Failed to initialize Redis client", error=str(e))
             raise
     
-    return redis_client
+    return _redis_client
 
 
-async def close_redis_client():
+async def close_redis_client() -> None:
     """Redisクライアントを閉じる"""
-    global redis_client
-    if redis_client:
-        await redis_client.close()
-        redis_client = None
+    global _redis_client
+    if _redis_client:
+        await _redis_client.close()
+        _redis_client = None
         logger.info("Redis client closed")
 
 
@@ -142,7 +142,7 @@ class RedisService:
             logger.error("Failed to decrement Redis key", key=key, error=str(e))
             return None
     
-    async def keys(self, pattern: str = "*") -> list:
+    async def keys(self, pattern: str = "*") -> List[str]:
         """パターンマッチするキー一覧を取得"""
         try:
             client = await self._get_client()
