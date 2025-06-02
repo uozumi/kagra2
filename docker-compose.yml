@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  # FastAPI バックエンド
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CORS_ORIGINS_STR=http://localhost:3000,http://localhost:3001,http://localhost:3002
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - redis
+    networks:
+      - kagra-network
+
+  # Redis (キャッシュ・セッション管理)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kagra-network
+
+  # メインフロントエンド (localhost:3000)
+  frontend-main:
+    build: ./frontend-main
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+    volumes:
+      - ./frontend-main:/app
+      - /app/node_modules
+    networks:
+      - kagra-network
+    depends_on:
+      - backend
+    profiles:
+      - frontend
+      - full
+
+  # システム管理フロントエンド (localhost:3001)
+  frontend-system:
+    build: ./frontend-system
+    ports:
+      - "3001:3001"
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+    volumes:
+      - ./frontend-system:/app
+      - /app/node_modules
+    networks:
+      - kagra-network
+    depends_on:
+      - backend
+    profiles:
+      - frontend
+      - full
+
+  # テナント管理フロントエンド (localhost:3002)
+  frontend-tenant:
+    build: ./frontend-tenant
+    ports:
+      - "3002:3002"
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+    volumes:
+      - ./frontend-tenant:/app
+      - /app/node_modules
+    networks:
+      - kagra-network
+    depends_on:
+      - backend
+    profiles:
+      - frontend
+      - full
+
+  # Nginx リバースプロキシ (本番環境用)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - backend
+      - frontend-main
+      - frontend-system
+      - frontend-tenant
+    networks:
+      - kagra-network
+    profiles:
+      - production
+
+volumes:
+  redis_data:
+
+networks:
+  kagra-network:
+    driver: bridge 

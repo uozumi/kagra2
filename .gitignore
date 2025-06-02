@@ -1,0 +1,111 @@
+# ===== 除外対象ディレクトリ =====
+# 参考用ディレクトリ（別リポジトリからコピー）
+kagra/
+
+# 使用されていないスクリプト
+scripts/
+
+# 使用されていないマイグレーションファイル（標準構造ではない）
+databases/
+
+# ===== Node.js関連 =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.yarn/
+.pnpm-debug.log*
+
+# ===== ビルド成果物 =====
+dist/
+dist-ssr/
+build/
+*.tsbuildinfo
+
+# ===== 環境設定ファイル =====
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# ===== Python関連 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===== IDE・エディタ関連 =====
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== ログファイル =====
+logs/
+*.log
+
+# ===== 一時ファイル =====
+*.tmp
+*.temp
+.cache/
+.parcel-cache/
+
+# ===== Docker関連 =====
+.dockerignore
+
+# ===== データベース =====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== 証明書・キー =====
+*.pem
+*.key
+*.crt
+*.p12
+
+# ===== アップロードファイル =====
+uploads/
+static/uploads/
+
+# ===== テストカバレッジ =====
+coverage/
+.nyc_output/
+.coverage
+htmlcov/
+
+# ===== OS関連 =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== その他 =====
+*.local
+.eslintcache 
